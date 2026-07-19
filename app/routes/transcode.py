@@ -61,7 +61,16 @@ async def transcode_from_telegram(
 ):
     settings = get_settings()
     transcoder_secret = os.environ.get("TRANSCODER_SECRET", "")
-    if transcoder_secret and body.secret != transcoder_secret:
+    if not transcoder_secret:
+        # Fail closed, not open: an unset secret used to mean "accept
+        # anything," which both disabled auth entirely and guaranteed the
+        # outbound callback would send an empty secret and get rejected.
+        logger.error("TRANSCODER_SECRET is not configured; rejecting /transcode request")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Service misconfigured: TRANSCODER_SECRET is not set",
+        )
+    if body.secret != transcoder_secret:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid secret")
 
     video_id = body.video_id or uuid.uuid4().hex
@@ -86,7 +95,6 @@ async def transcode_from_telegram(
     )
 
     return {"video_id": video_id, "status": VideoStatus.PROCESSING.value}
-
 
 async def _process_tg_video(
     video_id: str,
@@ -212,3 +220,9 @@ async def _process_tg_video(
                 logger.info("Callback sent to %s for video %s", callback_url, video_id)
         except Exception as e:
             logger.error("Callback failed for %s: %s", video_id, e)
+            
+            
+            
+            
+            
+            
