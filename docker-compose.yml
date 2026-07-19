@@ -1,0 +1,22 @@
+services:
+  hls-api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # TEMP_DIR stays on a local volume. DATABASE_URL comes from .env so
+      # Turso (libsql://...) or Postgres work without a compose override
+      # forcing local SQLite.
+      - TEMP_DIR=/srv/temp
+    volumes:
+      - ./data:/srv/data
+      - ./temp:/srv/temp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

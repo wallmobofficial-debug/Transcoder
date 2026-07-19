@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: trascoder
+    region: singapore
+    runtime: docker
+    plan: free
+    branch: main
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_API
+        sync: false
+      - key: STORAGE_CHAT_ID
+        sync: false
+      - key: DATABASE_URL
+        value: libsql://wmreel-wallmob.aws-ap-south-1.turso.io
+      - key: DATABASE_AUTH_TOKEN
+        sync: false
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "500"
+      - key: HLS_SEGMENT_DURATION
+        value: "6"
+      - key: TELEGRAM_UPLOAD_CONCURRENCY
+        value: "5"
+      - key: TELEGRAM_MAX_RETRIES
+        value: "5"
+      - key: FILE_PATH_CACHE_TTL
+        value: "2700"
+      - key: METADATA_CACHE_TTL
+        value: "300"
+      - key: METADATA_CACHE_SIZE
+        value: "1000"
+      - key: FILE_PATH_CACHE_SIZE
+        value: "2000"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: TEMP_DIR
+        value: /tmp

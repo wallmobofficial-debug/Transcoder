@@ -1,0 +1,30 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get service URL from Render API
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          URL=$(curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services?name=trascoder" | \
+            python3 -c "
+import sys,json
+data=json.load(sys.stdin)
+svc=next((s for s in data if s['service']['name']=='trascoder'), None)
+print(svc['service']['url'] if svc else '')
+" 2>/dev/null || echo "")
+          echo "RENDER_URL=$URL" >> $GITHUB_ENV
+
+      - name: Ping health endpoint
+        run: |
+          URL="${{ env.RENDER_URL }}/health"
+          echo "Pinging $URL"
+          curl -sSf -o /dev/null -w "HTTP %{http_code}\n" "$URL" || echo "Ping failed (expected if service is sleeping)"
