@@ -15,9 +15,12 @@ All network calls go through `_call_with_retry`, which handles:
 """
 import asyncio
 import logging
+import os
 import random
 
 import httpx
+
+import aiofiles
 
 from app.config import get_settings
 
@@ -176,3 +179,26 @@ class TelegramClient:
         """
         headers = {"Range": range_header} if range_header else {}
         return self._client.stream("GET", url, headers=headers)
+
+    async def download_to_path(self, file_id: str, dest_path: str) -> str:
+        """Resolves a Telegram file_id to a download URL and streams the
+        entire file to `dest_path`. Returns the absolute path.
+        """
+        file_path = await self.resolve_file_path(file_id)
+        url = self.build_download_url(file_path)
+
+        async with self._client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            import aiofiles
+            async with aiofiles.open(dest_path, "wb") as f:
+                async for chunk in resp.aiter_bytes(1024 * 1024):
+                    await f.write(chunk)
+
+        return os.path.abspath(dest_path)
+
+    async def resolve_file_id(self, file_path_str: str) -> str:
+        """Resolve a full download URL or file path back to a file_id.
+        Not directly possible via Bot API; used as a helper stub.
+        Raises NotImplementedError since one-directional mapping is by design.
+        """
+        raise NotImplementedError("Telegram Bot API does not expose reverse file_id lookup")

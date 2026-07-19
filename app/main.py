@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import init_db
-from app.routes import streaming, upload
+from app.routes import streaming, transcode, upload
 from app.telegram_client import TelegramClient
 
 logging.basicConfig(level=logging.INFO)
@@ -68,3 +68,4 @@ async def health():
 
 app.include_router(upload.router, tags=["upload"])
 app.include_router(streaming.router, tags=["streaming"])
+app.include_router(transcode.router, tags=["transcode"])
