@@ -70,6 +70,7 @@ class TelegramClient:
         Permanent client errors (HTTP 4xx other than 429) are not retried.
         """
         attempt = 0
+        rate_limit_backoff = 0
         while True:
             try:
                 return await coro_fn(*args, **kwargs)
@@ -77,7 +78,8 @@ class TelegramClient:
                 attempt += 1
                 if attempt > self.max_retries:
                     raise TelegramAPIError("Exceeded retries after repeated rate limiting") from e
-                wait = e.retry_after + random.uniform(0, 0.5)
+                rate_limit_backoff = max(rate_limit_backoff, e.retry_after) * 1.5
+                wait = rate_limit_backoff + random.uniform(0, 1)
                 logger.warning("Telegram rate limit hit, sleeping %.1fs (attempt %d)", wait, attempt)
                 await asyncio.sleep(wait)
             except httpx.HTTPStatusError as e:

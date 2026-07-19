@@ -142,24 +142,24 @@ async def upload_video(
             )
 
         try:
-            # return_exceptions=True so gather waits for *all* in-flight uploads
-            # before we continue. Without that, the first failure returns while
-            # sibling tasks are still reading segment files, and the finally
-            # block's rmtree can delete files out from under them.
             segment_tasks = [upload_one(filename, order_index) for filename, order_index in upload_plan]
             segment_results = await asyncio.gather(*segment_tasks, return_exceptions=True)
             failures = [r for r in segment_results if isinstance(r, Exception)]
             if failures:
                 raise failures[0]
             hls_file_rows = list(segment_results)
-            # Playlists uploaded after segments so a partial failure never
-            # leaves a master/variant playlist pointing at missing segments.
             hls_file_rows.append(await upload_one("stream.m3u8", -1))
             hls_file_rows.append(await upload_one("master.m3u8", -2))
         except Exception as e:
             video.status = VideoStatus.FAILED
             video.error_message = str(e)
-            db.commit()
+            try:
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             logger.error("Upload pipeline failed for %s: %s", video_id, e)
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Failed to store video on backend") from e
 
