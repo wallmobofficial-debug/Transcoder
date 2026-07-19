@@ -3,13 +3,17 @@ FFmpeg integration: transcodes an uploaded MP4 into HLS renditions
 (playlists + .ts segments) and probes it for bandwidth/resolution info
 used to build the master playlist.
 
-Supports multi-quality ABR (480p, 720p, 1080p).
+Supports multi-quality ABR (480p, 720p, 1080p). Preset/thread count and
+the top rendition height are configurable (see app.config) so this can be
+tuned down for constrained hosts like Render's free tier.
 """
 import asyncio
 import json
 import logging
 import os
 from dataclasses import dataclass
+
+from app.config import get_settings
 
 logger = logging.getLogger("ffmpeg_utils")
 
@@ -31,6 +35,19 @@ RENDITIONS = [
     Rendition(name="720", height=720, video_bitrate="2500k"),
     Rendition(name="1080", height=1080, video_bitrate="5000k"),
 ]
+
+
+def select_active_renditions(source_height: int, max_height: int | None = None) -> list[Rendition]:
+    """Picks which renditions to encode: never upscale past the source,
+    and never exceed `max_height` (the free-tier cap on the heaviest
+    rendition allowed). Always returns at least one rendition."""
+    cap = source_height or RENDITIONS[0].height
+    if max_height:
+        cap = min(cap, max_height)
+    active = [r for r in RENDITIONS if r.height <= cap]
+    if not active:
+        active = [RENDITIONS[0]]
+    return active
 
 
 async def probe_video(input_path: str) -> dict:
@@ -78,6 +95,7 @@ async def _transcode_rendition(
     """Transcodes `input_path` into one HLS rendition (single resolution).
     Returns {"playlist_path": ..., "segments": [...]}.
     """
+    settings = get_settings()
     os.makedirs(output_dir, exist_ok=True)
     playlist_path = os.path.join(output_dir, "stream.m3u8")
     segment_pattern = os.path.join(output_dir, "segment%03d.ts")
@@ -86,13 +104,14 @@ async def _transcode_rendition(
         "ffmpeg",
         "-y",
         "-i", input_path,
-        "-c:v", "h264",
+        "-c:v", "libx264",
+        "-threads", str(settings.ffmpeg_threads),
         "-profile:v", "main",
         "-pix_fmt", "yuv420p",
         "-b:v", rendition.video_bitrate,
         "-maxrate", str(int(rendition.video_bitrate[:-1]) * 2) + "k",
         "-bufsize", str(int(rendition.video_bitrate[:-1]) * 4) + "k",
-        "-preset", "veryfast",
+        "-preset", settings.ffmpeg_preset,
         "-vf", f"scale=-2:{rendition.height}",
         "-c:a", "aac",
         "-ac", "2",
@@ -129,7 +148,9 @@ async def transcode_all_renditions(
     segment_duration: int,
     active_renditions: list[Rendition] | None = None,
 ) -> dict:
-    """Transcodes into all configured renditions sequentially.
+    """Transcodes into all configured renditions sequentially (deliberately
+    NOT parallel — running multiple ffmpeg processes at once is exactly
+    the kind of memory spike that kills a 512MB instance).
     Returns {"renditions": [{"name": ..., "height": ..., "segments": [...]}, ...]}
     """
     renditions = active_renditions or RENDITIONS

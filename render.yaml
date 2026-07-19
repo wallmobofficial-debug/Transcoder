@@ -18,21 +18,29 @@ services:
       - key: DATABASE_AUTH_TOKEN
         sync: false
       - key: MAX_UPLOAD_SIZE_MB
-        value: "500"
+        value: "200"
       - key: HLS_SEGMENT_DURATION
         value: "6"
       - key: TELEGRAM_UPLOAD_CONCURRENCY
-        value: "5"
+        value: "2"
       - key: TELEGRAM_MAX_RETRIES
         value: "5"
+      - key: FFMPEG_PRESET
+        value: ultrafast
+      - key: FFMPEG_THREADS
+        value: "1"
+      - key: MAX_RENDITION_HEIGHT
+        value: "1080"
+      - key: VIDEO_PROCESSING_CONCURRENCY
+        value: "1"
       - key: FILE_PATH_CACHE_TTL
         value: "2700"
       - key: METADATA_CACHE_TTL
         value: "300"
       - key: METADATA_CACHE_SIZE
-        value: "1000"
+        value: "200"
       - key: FILE_PATH_CACHE_SIZE
-        value: "2000"
+        value: "500"
       - key: LOG_LEVEL
         value: INFO
       - key: ALLOWED_ORIGINS

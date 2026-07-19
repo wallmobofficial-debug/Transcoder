@@ -1,11 +1,12 @@
 """
-Application entrypoint. Wires up the DB, the shared TelegramClient, CORS,
-and the two route modules.
+Application entrypoint. Wires up the DB, the shared TelegramClient, a
+global cap on concurrent video processing, CORS, and the route modules.
 
 Startup is kept fast and cheap: table creation is a no-op after the first
 run, and the TelegramClient constructor does no network I/O (the HTTP
 client is opened lazily on first request).
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -28,8 +29,21 @@ async def lifespan(app: FastAPI):
     logging.getLogger().setLevel(settings.log_level)
 
     init_db()
+    # One shared TelegramClient (and its connection pool) for the whole
+    # process lifetime — background tasks reuse this instead of spinning
+    # up their own, which would otherwise multiply memory/socket usage
+    # and let per-task upload semaphores bypass the intended global cap.
     app.state.telegram_client = TelegramClient()
-    logger.info("Startup complete (db=%s)", settings.database_url.split("@")[-1] if "@" in settings.database_url else settings.database_url)
+    # Global cap on simultaneous video-processing background tasks. Each
+    # ffmpeg encode + its Telegram uploads can use a few hundred MB; on a
+    # 512MB instance, processing more than one video at a time risks an
+    # OOM kill, so this defaults to 1 (see Settings.video_processing_concurrency).
+    app.state.processing_semaphore = asyncio.Semaphore(settings.video_processing_concurrency)
+    logger.info(
+        "Startup complete (db=%s, processing_concurrency=%d)",
+        settings.database_url.split("@")[-1] if "@" in settings.database_url else settings.database_url,
+        settings.video_processing_concurrency,
+    )
 
     yield
 

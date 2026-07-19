@@ -11,8 +11,16 @@ Both are process-local TTLCaches guarded by an asyncio.Lock per key to
 avoid duplicate "thundering herd" lookups when many requests race for the
 same uncached key (common right after a video goes viral / is first
 requested by many player instances at once).
+
+The per-key locks live in a WeakValueDictionary rather than a plain dict:
+a plain dict would keep accumulating one Lock per key forever (every
+video_id / telegram_file_id ever seen), which is a slow, unbounded memory
+leak on a long-running process — worth avoiding even more on a 512MB
+instance than on a large one. WeakValueDictionary lets a lock be
+collected once no coroutine is actively holding/awaiting it.
 """
 import asyncio
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -27,7 +35,7 @@ settings = get_settings()
 file_path_cache: TTLCache = TTLCache(maxsize=settings.file_path_cache_size, ttl=settings.file_path_cache_ttl)
 metadata_cache: TTLCache = TTLCache(maxsize=settings.metadata_cache_size, ttl=settings.metadata_cache_ttl)
 
-_locks: dict[str, asyncio.Lock] = {}
+_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 _locks_guard = asyncio.Lock()
 
 
