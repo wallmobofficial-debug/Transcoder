@@ -182,6 +182,19 @@ async def _process_tg_video(
                     rd["name"]: str(httpx.URL(f"{public_url}/video/{video_id}/{rd['name']}/stream.m3u8"))
                     for rd in transcode_result["renditions"]
                 }
+                quality_meta = {}
+                for rd in transcode_result["renditions"]:
+                    segs = rd["segments"]
+                    rd_dir = os.path.join(hls_dir, rd["name"])
+                    total_bytes = sum(
+                        os.path.getsize(os.path.join(rd_dir, s))
+                        for s in segs
+                    )
+                    bandwidth = max(int(total_bytes * 8 / duration * 1.1), 100_000)
+                    width = int(rd["height"] * 16 / 9 / 2) * 2
+                    quality_meta[rd["name"]] = {
+                        "bandwidth": bandwidth, "width": width, "height": rd["height"],
+                    }
                 logger.info("Video %s processed successfully (%d renditions)", video_id, len(transcode_result["renditions"]))
     except Exception as e:
         logger.error("Background processing failed for %s: %s", video_id, e)
@@ -205,6 +218,7 @@ async def _process_tg_video(
                     "videoId": video_id,
                     "qualities": qualities,
                     "masterPlaylistUrl": master_url,
+                    "qualityMeta": quality_meta,
                     "secret": os.environ.get("TRANSCODER_SECRET", ""),
                 })
             if resp.status_code >= 400:
@@ -220,9 +234,3 @@ async def _process_tg_video(
                 logger.info("Callback sent to %s for video %s", callback_url, video_id)
         except Exception as e:
             logger.error("Callback failed for %s: %s", video_id, e)
-            
-            
-            
-            
-            
-            
