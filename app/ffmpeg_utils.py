@@ -1,22 +1,36 @@
 """
-FFmpeg integration: transcodes an uploaded MP4 into an HLS variant
-(playlist + .ts segments) and probes it for bandwidth/resolution info
+FFmpeg integration: transcodes an uploaded MP4 into HLS renditions
+(playlists + .ts segments) and probes it for bandwidth/resolution info
 used to build the master playlist.
 
-All subprocess calls are async (asyncio.create_subprocess_exec) so they
-never block the event loop, and ffmpeg reads/writes files directly on
-disk — the video bytes never pass through Python memory.
+Supports multi-quality ABR (480p, 720p, 1080p).
 """
 import asyncio
 import json
 import logging
 import os
+from dataclasses import dataclass
 
 logger = logging.getLogger("ffmpeg_utils")
 
 
 class FFmpegError(Exception):
     pass
+
+
+@dataclass
+class Rendition:
+    name: str
+    height: int
+    video_bitrate: str
+    audio_bitrate: str = "128k"
+
+
+RENDITIONS = [
+    Rendition(name="480", height=480, video_bitrate="800k"),
+    Rendition(name="720", height=720, video_bitrate="2500k"),
+    Rendition(name="1080", height=1080, video_bitrate="5000k"),
+]
 
 
 async def probe_video(input_path: str) -> dict:
@@ -49,23 +63,20 @@ async def probe_video(input_path: str) -> dict:
 
     return {
         "duration": duration,
-        "bitrate": bit_rate or 2_000_000,  # sane fallback if source has no bitrate tag
+        "bitrate": bit_rate or 2_000_000,
         "width": width or 1280,
         "height": height or 720,
     }
 
 
-async def transcode_to_hls(input_path: str, output_dir: str, segment_duration: int) -> dict:
-    """Transcodes `input_path` into HLS inside `output_dir`.
-
-    Produces:
-      output_dir/stream.m3u8
-      output_dir/segment000.ts, segment001.ts, ...
-
-    Uses H.264/AAC re-encoding for broad compatibility (ExoPlayer, hls.js,
-    Safari, VLC) rather than `-c copy`, since source codecs vary and
-    stream-copy HLS often breaks players when keyframes don't align to
-    segment boundaries.
+async def _transcode_rendition(
+    input_path: str,
+    output_dir: str,
+    rendition: Rendition,
+    segment_duration: int,
+) -> dict:
+    """Transcodes `input_path` into one HLS rendition (single resolution).
+    Returns {"playlist_path": ..., "segments": [...]}.
     """
     os.makedirs(output_dir, exist_ok=True)
     playlist_path = os.path.join(output_dir, "stream.m3u8")
@@ -77,15 +88,15 @@ async def transcode_to_hls(input_path: str, output_dir: str, segment_duration: i
         "-i", input_path,
         "-c:v", "h264",
         "-profile:v", "main",
-        # yuv420p is required for broad player support (Safari/ExoPlayer/hls.js);
-        # without it, sources in yuv422/yuv444/10-bit often produce unplayable HLS.
         "-pix_fmt", "yuv420p",
-        "-crf", "20",
+        "-b:v", rendition.video_bitrate,
+        "-maxrate", str(int(rendition.video_bitrate[:-1]) * 2) + "k",
+        "-bufsize", str(int(rendition.video_bitrate[:-1]) * 4) + "k",
         "-preset", "veryfast",
+        "-vf", f"scale=-2:{rendition.height}",
         "-c:a", "aac",
         "-ac", "2",
-        "-b:a", "128k",
-        # Force a keyframe at every segment boundary so players can seek cleanly
+        "-b:a", rendition.audio_bitrate,
         "-force_key_frames", f"expr:gte(t,n_forced*{segment_duration})",
         "-hls_time", str(segment_duration),
         "-hls_list_size", "0",
@@ -100,26 +111,53 @@ async def transcode_to_hls(input_path: str, output_dir: str, segment_duration: i
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise FFmpegError(f"ffmpeg transcode failed: {stderr.decode(errors='ignore')[-2000:]}")
+        raise FFmpegError(f"ffmpeg {rendition.name}p failed: {stderr.decode(errors='ignore')[-2000:]}")
 
     if not os.path.exists(playlist_path):
-        raise FFmpegError("ffmpeg reported success but no playlist was produced")
+        raise FFmpegError(f"ffmpeg {rendition.name}p reported success but no playlist produced")
 
     segments = sorted(f for f in os.listdir(output_dir) if f.endswith(".ts"))
     if not segments:
-        raise FFmpegError("ffmpeg produced a playlist with zero segments")
+        raise FFmpegError(f"ffmpeg {rendition.name}p produced zero segments")
 
     return {"playlist_path": playlist_path, "segments": segments}
 
 
-def build_master_playlist(bandwidth: int, width: int, height: int, variant_filename: str) -> str:
-    """Builds a master playlist referencing a single variant stream.
-    (Extending to multi-bitrate is straightforward: transcode multiple
-    renditions and add one EXT-X-STREAM-INF line per rendition here.)
+async def transcode_all_renditions(
+    input_path: str,
+    hls_dir: str,
+    segment_duration: int,
+) -> dict:
+    """Transcodes into all configured renditions sequentially.
+    Returns mapping: {"renditions": [{"name": ..., "segments": [...]}, ...],
+                      "results": [{"playlist_path": ..., "segments": [...]}, ...]}
     """
-    return (
-        "#EXTM3U\n"
-        "#EXT-X-VERSION:3\n"
-        f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{height}\n'
-        f"{variant_filename}\n"
-    )
+    results = []
+    for rend in RENDITIONS:
+        out = os.path.join(hls_dir, rend.name)
+        result = await _transcode_rendition(input_path, out, rend, segment_duration)
+        results.append({"name": rend.name, "height": rend.height, **result})
+    return {"renditions": results}
+
+
+def build_master_playlist(renditions_data: list[dict], duration: float) -> str:
+    """Builds a master playlist from multiple rendition outputs.
+    Each item in renditions_data: {"name": "480", "height": 480,
+                                    "playlist_path": ..., "segments": [...]}
+    """
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
+    for rd in renditions_data:
+        segments = rd["segments"]
+        if not segments:
+            continue
+        total_bytes = sum(
+            os.path.getsize(os.path.join(os.path.dirname(rd["playlist_path"]), s))
+            for s in segments
+        )
+        bandwidth = max(int(total_bytes * 8 / duration * 1.1), 100_000)
+        width = int(rd["height"] * 16 / 9 / 2) * 2
+        lines.append(
+            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={width}x{rd["height"]}'
+        )
+        lines.append(f'{rd["name"]}/stream.m3u8')
+    return "\n".join(lines) + "\n"

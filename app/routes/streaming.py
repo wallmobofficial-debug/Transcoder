@@ -164,7 +164,7 @@ async def get_master_playlist(
     )
 
 
-@router.get("/video/{video_id}/{segment}", name="get_segment")
+@router.get("/video/{video_id}/{segment:path}", name="get_segment")
 async def get_segment(
     video_id: str,
     segment: str,

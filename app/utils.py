@@ -9,7 +9,7 @@ import re
 # Content-Type / extension alone.
 _MP4_FTYP_MARKER = b"ftyp"
 
-SEGMENT_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+SEGMENT_NAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+$")
 
 
 def looks_like_mp4(header_bytes: bytes) -> bool:
@@ -27,7 +27,7 @@ def safe_upload_filename(filename: str) -> str:
 def is_safe_segment_name(name: str) -> bool:
     """Guards the GET /video/{id}/{segment} route against path traversal
     and only allows the filenames we ourselves generated at upload time."""
-    if not name or ".." in name or "/" in name or "\\" in name:
+    if not name or ".." in name or "\\" in name or name.startswith("/") or "//" in name:
         return False
     return bool(SEGMENT_NAME_RE.match(name))
 

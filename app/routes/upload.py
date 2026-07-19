@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.ffmpeg_utils import FFmpegError, build_master_playlist, probe_video, transcode_to_hls
+from app.ffmpeg_utils import FFmpegError, build_master_playlist, probe_video, transcode_all_renditions
 from app.models import HLSFile, Video, VideoStatus
 from app.schemas import UploadResponse
 from app.telegram_client import TelegramAPIError, TelegramClient
@@ -86,48 +86,37 @@ async def upload_video(
         if not looks_like_mp4(header_buffer):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "File does not look like a valid MP4 container")
 
-        # --- 2. Probe + transcode ---
+        # --- 2. Probe ---
         try:
             probe = await probe_video(input_path)
-            hls_result = await transcode_to_hls(input_path, hls_dir, settings.hls_segment_duration)
+        except FFmpegError as e:
+            logger.error("Probe failed for %s: %s", video_id, e)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Could not read video file") from e
+
+        duration = max(float(probe["duration"] or 0), 0.1)
+
+        # --- 3. Transcode all renditions ---
+        try:
+            transcode_result = await transcode_all_renditions(
+                input_path, hls_dir, settings.hls_segment_duration
+            )
         except FFmpegError as e:
             logger.error("Transcode failed for %s: %s", video_id, e)
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Could not process video file") from e
 
-        # Bandwidth must reflect the re-encoded HLS output, not the source
-        # container bitrate (CRF output often differs substantially).
-        duration = max(float(probe["duration"] or 0), 0.1)
-        total_segment_bytes = sum(
-            os.path.getsize(os.path.join(hls_dir, name)) for name in hls_result["segments"]
-        )
-        # Average bitrate with a small headroom factor so players don't
-        # underestimate peak demand near scene changes.
-        hls_bandwidth = max(int(total_segment_bytes * 8 / duration * 1.1), 100_000)
-
-        # --- 3. Build master playlist ---
-        master_content = build_master_playlist(
-            bandwidth=hls_bandwidth,
-            width=probe["width"],
-            height=probe["height"],
-            variant_filename="stream.m3u8",
-        )
+        # --- 4. Build master playlist ---
+        master_content = build_master_playlist(transcode_result["renditions"], duration)
         master_path = os.path.join(hls_dir, "master.m3u8")
         async with aiofiles.open(master_path, "w") as f:
             await f.write(master_content)
 
-        # --- 4. Upload everything to Telegram ---
+        # --- 5. Upload everything to Telegram ---
         video = Video(id=video_id, original_filename=safe_name, status=VideoStatus.PROCESSING,
                        duration_seconds=probe["duration"])
         db.add(video)
         db.flush()
 
-        # Segment filenames already come out of ffmpeg pre-sorted (segment000.ts, ...);
-        # order_index preserves that ordering explicitly in the DB too.
-        upload_plan = list(enumerate(hls_result["segments"]))
-        upload_plan = [(name, idx) for idx, name in upload_plan]
-
-        async def upload_one(filename: str, order_index: int) -> HLSFile:
-            local_path = os.path.join(hls_dir, filename)
+        async def upload_one(local_path: str, filename: str, order_index: int) -> HLSFile:
             try:
                 file_id, size = await telegram.upload_document(local_path, filename)
             except TelegramAPIError as e:
@@ -141,15 +130,26 @@ async def upload_video(
                 order_index=order_index,
             )
 
+        hls_file_rows: list[HLSFile] = []
         try:
-            segment_tasks = [upload_one(filename, order_index) for filename, order_index in upload_plan]
-            segment_results = await asyncio.gather(*segment_tasks, return_exceptions=True)
-            failures = [r for r in segment_results if isinstance(r, Exception)]
-            if failures:
-                raise failures[0]
-            hls_file_rows = list(segment_results)
-            hls_file_rows.append(await upload_one("stream.m3u8", -1))
-            hls_file_rows.append(await upload_one("master.m3u8", -2))
+            order = 0
+            for rd in transcode_result["renditions"]:
+                rd_dir = os.path.join(hls_dir, rd["name"])
+                segs = rd["segments"]
+                tasks = [
+                    upload_one(os.path.join(rd_dir, s), f'{rd["name"]}/{s}', order + i)
+                    for i, s in enumerate(segs)
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                failures = [r for r in results if isinstance(r, Exception)]
+                if failures:
+                    raise failures[0]
+                hls_file_rows.extend(results)
+                order += len(segs)
+                pl = await upload_one(os.path.join(rd_dir, "stream.m3u8"), f'{rd["name"]}/stream.m3u8', -1)
+                hls_file_rows.append(pl)
+            master = await upload_one(master_path, "master.m3u8", -2)
+            hls_file_rows.append(master)
         except Exception as e:
             video.status = VideoStatus.FAILED
             video.error_message = str(e)
