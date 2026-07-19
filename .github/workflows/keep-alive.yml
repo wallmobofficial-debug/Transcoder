@@ -15,14 +15,10 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
           URL=$(curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
-            "https://api.render.com/v1/services?name=trascoder" | \
-            python3 -c "
-import sys,json
-data=json.load(sys.stdin)
-svc=next((s for s in data if s['service']['name']=='trascoder'), None)
-print(svc['service']['url'] if svc else '')
-" 2>/dev/null || echo "")
-          echo "url=$URL" >> $GITHUB_OUTPUT
+            "https://api.render.com/v1/services?name=trascoder" \
+            | python3 -c "import sys,json; print(next((s['service']['url'] for s in json.load(sys.stdin) if s['service']['name']=='trascoder'), '') )" \
+            2>/dev/null || echo "")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Ping health endpoint
         env:
