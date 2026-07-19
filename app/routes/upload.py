@@ -19,7 +19,7 @@ import shutil
 import uuid
 
 import aiofiles
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from sqlalchemy import select
