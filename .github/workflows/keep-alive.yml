@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Get service URL from Render API
+        id: url
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
@@ -21,10 +22,12 @@ data=json.load(sys.stdin)
 svc=next((s for s in data if s['service']['name']=='trascoder'), None)
 print(svc['service']['url'] if svc else '')
 " 2>/dev/null || echo "")
-          echo "RENDER_URL=$URL" >> $GITHUB_ENV
+          echo "url=$URL" >> $GITHUB_OUTPUT
 
       - name: Ping health endpoint
+        env:
+          URL: ${{ steps.url.outputs.url }}
         run: |
-          URL="${{ env.RENDER_URL }}/health"
-          echo "Pinging $URL"
-          curl -sSf -o /dev/null -w "HTTP %{http_code}\n" "$URL" || echo "Ping failed (expected if service is sleeping)"
+          TARGET="${URL:-https://web-based-ipl-team-prediction-4ak8.onrender.com}/health"
+          echo "Pinging $TARGET"
+          curl -sSf -o /dev/null -w "HTTP %{http_code}\n" "$TARGET" || echo "Ping failed"
