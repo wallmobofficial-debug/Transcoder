@@ -127,13 +127,14 @@ async def transcode_all_renditions(
     input_path: str,
     hls_dir: str,
     segment_duration: int,
+    active_renditions: list[Rendition] | None = None,
 ) -> dict:
     """Transcodes into all configured renditions sequentially.
-    Returns mapping: {"renditions": [{"name": ..., "segments": [...]}, ...],
-                      "results": [{"playlist_path": ..., "segments": [...]}, ...]}
+    Returns {"renditions": [{"name": ..., "height": ..., "segments": [...]}, ...]}
     """
+    renditions = active_renditions or RENDITIONS
     results = []
-    for rend in RENDITIONS:
+    for rend in renditions:
         out = os.path.join(hls_dir, rend.name)
         result = await _transcode_rendition(input_path, out, rend, segment_duration)
         results.append({"name": rend.name, "height": rend.height, **result})

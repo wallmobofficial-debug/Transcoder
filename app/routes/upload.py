@@ -116,12 +116,12 @@ async def _process_video(video_id: str, input_path: str, work_dir: str, segment_
         duration = max(float(probe["duration"] or 0), 0.1)
 
         source_height = probe.get("height") or 1080
-        active_renditions = [r for r in RENDITIONS if r.height <= source_height]
-        if not active_renditions:
-            active_renditions = [RENDITIONS[0]]
+        active = [r for r in RENDITIONS if r.height <= source_height]
+        if not active:
+            active = [RENDITIONS[0]]
 
         transcode_result = await transcode_all_renditions(
-            input_path, hls_dir, segment_duration,
+            input_path, hls_dir, segment_duration, active_renditions=active,
         )
 
         master_content = build_master_playlist(transcode_result["renditions"], duration)
