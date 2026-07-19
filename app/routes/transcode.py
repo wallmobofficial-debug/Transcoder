@@ -12,7 +12,9 @@ Flow:
   4. Probe, transcode to HLS renditions, build master playlist.
   5. Upload all HLS artifacts to Telegram (same chat as source).
   6. Persist metadata in the DB.
-  7. Call back the reels-backend with video_id + master_playlist_url.
+  7. Call back the reels-backend with video_id + master_playlist_url +
+     per-rendition URLs, and actually check the response status instead
+     of assuming success.
 """
 import asyncio
 import logging
@@ -104,6 +106,7 @@ async def _process_tg_video(
 
     db = SessionLocal()
     master_url = None
+    qualities: dict[str, str] = {}
     try:
         # Downloading doesn't need the processing slot — only the
         # CPU/RAM-heavy transcode + upload phase does.
@@ -159,7 +162,18 @@ async def _process_tg_video(
                 video.status = VideoStatus.READY
                 video.duration_seconds = probe["duration"]
                 db.commit()
-                master_url = str(httpx.URL(f"{os.environ.get('PUBLIC_URL', 'http://localhost:8000')}/video/{video_id}/master.m3u8"))
+
+                public_url = os.environ.get("PUBLIC_URL", "http://localhost:8000")
+                master_url = str(httpx.URL(f"{public_url}/video/{video_id}/master.m3u8"))
+                # Per-rendition variant playlist URLs, keyed by rendition
+                # name (e.g. "480", "720", "1080") — previously this was
+                # always sent as an empty {} regardless of what actually
+                # got transcoded, which is why reels-backend was rejecting
+                # the callback with a 400.
+                qualities = {
+                    rd["name"]: str(httpx.URL(f"{public_url}/video/{video_id}/{rd['name']}/stream.m3u8"))
+                    for rd in transcode_result["renditions"]
+                }
                 logger.info("Video %s processed successfully (%d renditions)", video_id, len(transcode_result["renditions"]))
     except Exception as e:
         logger.error("Background processing failed for %s: %s", video_id, e)
@@ -179,12 +193,22 @@ async def _process_tg_video(
     if callback_url and master_url:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                await client.post(callback_url, json={
+                resp = await client.post(callback_url, json={
                     "videoId": video_id,
-                    "qualities": {},
+                    "qualities": qualities,
                     "masterPlaylistUrl": master_url,
                     "secret": os.environ.get("TRANSCODER_SECRET", ""),
                 })
-            logger.info("Callback sent to %s for video %s", callback_url, video_id)
+            if resp.status_code >= 400:
+                # Previously this branch didn't exist at all — a 400/500
+                # response was logged as "Callback sent" just like a 200,
+                # so failed callbacks were invisible without pulling raw
+                # HTTP logs. Now the actual rejection reason is captured.
+                logger.error(
+                    "Callback to %s for video %s rejected: HTTP %d — %s",
+                    callback_url, video_id, resp.status_code, resp.text[:500],
+                )
+            else:
+                logger.info("Callback sent to %s for video %s", callback_url, video_id)
         except Exception as e:
             logger.error("Callback failed for %s: %s", video_id, e)
