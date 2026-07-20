@@ -171,13 +171,12 @@ async def _process_tg_video(
                 video.duration_seconds = probe["duration"]
                 db.commit()
 
-                public_url = os.environ.get("PUBLIC_URL", "http://localhost:8000")
+                public_url = (
+                    os.environ.get("RENDER_EXTERNAL_URL")
+                    or os.environ.get("PUBLIC_URL")
+                    or "http://localhost:8000"
+                )
                 master_url = str(httpx.URL(f"{public_url}/video/{video_id}/master.m3u8"))
-                # Per-rendition variant playlist URLs, keyed by rendition
-                # name (e.g. "480", "720", "1080") — previously this was
-                # always sent as an empty {} regardless of what actually
-                # got transcoded, which is why reels-backend was rejecting
-                # the callback with a 400.
                 qualities = {
                     rd["name"]: str(httpx.URL(f"{public_url}/video/{video_id}/{rd['name']}/stream.m3u8"))
                     for rd in transcode_result["renditions"]
