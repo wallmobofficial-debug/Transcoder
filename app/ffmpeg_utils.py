@@ -30,10 +30,12 @@ class Rendition:
     audio_bitrate: str = "128k"
 
 
+# Bitrate ladder tuned for watchable ABR quality (not free-tier minimums).
+# Previous values (800k / 2500k / 5000k + ultrafast) looked soft / muddy.
 RENDITIONS = [
-    Rendition(name="480", height=480, video_bitrate="800k"),
-    Rendition(name="720", height=720, video_bitrate="2500k"),
-    Rendition(name="1080", height=1080, video_bitrate="5000k"),
+    Rendition(name="480", height=480, video_bitrate="1600k", audio_bitrate="128k"),
+    Rendition(name="720", height=720, video_bitrate="3500k", audio_bitrate="160k"),
+    Rendition(name="1080", height=1080, video_bitrate="6500k", audio_bitrate="192k"),
 ]
 
 
@@ -100,22 +102,31 @@ async def _transcode_rendition(
     playlist_path = os.path.join(output_dir, "stream.m3u8")
     segment_pattern = os.path.join(output_dir, "segment%03d.ts")
 
+    # Parse e.g. "1600k" → 1600 for maxrate/bufsize caps.
+    v_kbps = int(rendition.video_bitrate.rstrip("kK"))
+    # high profile for 720p+ (better tools at same bitrate); main for 480p
+    # for wider device compatibility on the lowest rung.
+    profile = "high" if rendition.height >= 720 else "main"
+
     cmd = [
         "ffmpeg",
         "-y",
         "-i", input_path,
         "-c:v", "libx264",
         "-threads", str(settings.ffmpeg_threads),
-        "-profile:v", "main",
+        "-profile:v", profile,
+        "-level", "4.1" if rendition.height >= 720 else "3.1",
         "-pix_fmt", "yuv420p",
         "-b:v", rendition.video_bitrate,
-        "-maxrate", str(int(rendition.video_bitrate[:-1]) * 2) + "k",
-        "-bufsize", str(int(rendition.video_bitrate[:-1]) * 4) + "k",
+        "-maxrate", f"{v_kbps * 2}k",
+        "-bufsize", f"{v_kbps * 4}k",
         "-preset", settings.ffmpeg_preset,
-        "-vf", f"scale=-2:{rendition.height}",
+        # lanczos downscale stays sharper than the default bilinear scaler
+        "-vf", f"scale=-2:{rendition.height}:flags=lanczos",
         "-c:a", "aac",
         "-ac", "2",
         "-b:a", rendition.audio_bitrate,
+        "-ar", "48000",
         "-force_key_frames", f"expr:gte(t,n_forced*{segment_duration})",
         "-hls_time", str(segment_duration),
         "-hls_list_size", "0",

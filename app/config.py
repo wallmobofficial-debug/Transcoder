@@ -46,11 +46,11 @@ class Settings(BaseSettings):
     telegram_upload_concurrency: int = 2
     telegram_max_retries: int = 5
 
-    # --- Transcoding (free-tier tuned) ---
-    # "ultrafast" trades output file size for far less CPU/RAM per encode —
-    # important on a shared vCPU where "veryfast" can take several times
-    # longer (and burn more memory) for the same video.
-    ffmpeg_preset: str = "ultrafast"
+    # --- Transcoding ---
+    # "veryfast" is a good quality/speed balance for ABR ladders.
+    # Use "ultrafast" on very tight free-tier hosts (softer output at same bitrate).
+    # Use "fast" / "medium" if you have spare CPU and want max quality.
+    ffmpeg_preset: str = "veryfast"
     # Free tier typically grants a fraction of a CPU core; pinning threads
     # avoids ffmpeg spawning more encoder threads than the instance can
     # actually run in parallel, which just adds contention overhead.
