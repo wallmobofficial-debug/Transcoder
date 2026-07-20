@@ -47,3 +47,8 @@ services:
         value: "*"
       - key: TEMP_DIR
         value: /tmp
+      # Absolute origin used in masterPlaylistUrl callbacks to reels-backend.
+      # Without this, the service falls back to http://localhost:8000 and
+      # clients get unplayable playlist URLs.
+      - key: PUBLIC_URL
+        value: https://web-based-ipl-team-prediction-4ak8.onrender.com

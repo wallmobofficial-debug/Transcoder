@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     temp_dir: str = "./temp"
     allowed_origins: str = "*"
     log_level: str = "INFO"
+    # Public https origin of THIS service (no trailing slash). Used when
+    # building masterPlaylistUrl for the reels-backend callback.
+    # On Render you can also rely on RENDER_EXTERNAL_URL, but set this
+    # explicitly so callbacks never embed http://localhost:8000.
+    public_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PUBLIC_URL", "public_url"),
+    )
 
     @property
     def max_upload_size_bytes(self) -> int:

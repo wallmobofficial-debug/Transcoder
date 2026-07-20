@@ -171,14 +171,28 @@ async def _process_tg_video(
                 video.duration_seconds = probe["duration"]
                 db.commit()
 
+                # Prefer an explicit public origin. Never fall back to
+                # localhost in production — clients (phones, browsers) can't
+                # reach the container's bind address, and reels-backend would
+                # store/return that dead URL as masterPlaylistUrl.
+                settings = get_settings()
                 public_url = (
-                    os.environ.get("RENDER_EXTERNAL_URL")
-                    or os.environ.get("PUBLIC_URL")
-                    or "http://localhost:8000"
-                )
-                master_url = str(httpx.URL(f"{public_url}/video/{video_id}/master.m3u8"))
+                    (settings.public_url or "")
+                    or os.environ.get("PUBLIC_URL", "")
+                    or os.environ.get("RENDER_EXTERNAL_URL", "")
+                    or ""
+                ).rstrip("/")
+                if not public_url or "localhost" in public_url or "127.0.0.1" in public_url:
+                    logger.warning(
+                        "PUBLIC_URL/RENDER_EXTERNAL_URL missing or loopback; "
+                        "set PUBLIC_URL to the public https origin of this service"
+                    )
+                    # Last resort for local dev only
+                    if not public_url:
+                        public_url = "http://localhost:8000"
+                master_url = f"{public_url}/video/{video_id}/master.m3u8"
                 qualities = {
-                    rd["name"]: str(httpx.URL(f"{public_url}/video/{video_id}/{rd['name']}/stream.m3u8"))
+                    rd["name"]: f"{public_url}/video/{video_id}/{rd['name']}/stream.m3u8"
                     for rd in transcode_result["renditions"]
                 }
                 quality_meta = {}
