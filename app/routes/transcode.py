@@ -41,7 +41,8 @@ router = APIRouter()
 
 
 class TranscodeRequest(BaseModel):
-    file_id: str
+    file_id: str | None = None
+    original_video_url: str | None = None
     video_id: str
     secret: str
     callback_url: str | None = None
@@ -62,9 +63,6 @@ async def transcode_from_telegram(
     settings = get_settings()
     transcoder_secret = os.environ.get("TRANSCODER_SECRET", "")
     if not transcoder_secret:
-        # Fail closed, not open: an unset secret used to mean "accept
-        # anything," which both disabled auth entirely and guaranteed the
-        # outbound callback would send an empty secret and get rejected.
         logger.error("TRANSCODER_SECRET is not configured; rejecting /transcode request")
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -72,6 +70,9 @@ async def transcode_from_telegram(
         )
     if body.secret != transcoder_secret:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid secret")
+    
+    if not body.file_id and not body.original_video_url:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Either file_id or original_video_url is required")
 
     video_id = body.video_id or uuid.uuid4().hex
     work_dir = os.path.join(settings.temp_dir, f"tg-{video_id}")
@@ -83,11 +84,12 @@ async def transcode_from_telegram(
     db.commit()
 
     background_tasks.add_task(
-        _process_tg_video,
+        _process_video,
         video_id,
         input_path,
         work_dir,
         body.file_id,
+        body.original_video_url,
         settings.hls_segment_duration,
         body.callback_url,
         telegram,
@@ -96,11 +98,12 @@ async def transcode_from_telegram(
 
     return {"video_id": video_id, "status": VideoStatus.PROCESSING.value}
 
-async def _process_tg_video(
+async def _process_video(
     video_id: str,
     input_path: str,
     work_dir: str,
-    file_id: str,
+    file_id: str | None,
+    original_video_url: str | None,
     segment_duration: int,
     callback_url: str | None,
     telegram: TelegramClient,
@@ -116,9 +119,18 @@ async def _process_tg_video(
     master_url = None
     qualities: dict[str, str] = {}
     try:
-        # Downloading doesn't need the processing slot — only the
-        # CPU/RAM-heavy transcode + upload phase does.
-        await telegram.download_to_path(file_id, input_path)
+        if original_video_url:
+            logger.info("Downloading video %s from Supabase: %s", video_id, original_video_url)
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.get(original_video_url)
+                resp.raise_for_status()
+                async with aiofiles.open(input_path, "wb") as f:
+                    await f.write(resp.content)
+        elif file_id:
+            logger.info("Downloading video %s from Telegram: %s", video_id, file_id)
+            await telegram.download_to_path(file_id, input_path)
+        else:
+            raise ValueError("Either file_id or original_video_url must be provided")
 
         async with processing_semaphore:
             probe = await probe_video(input_path)
